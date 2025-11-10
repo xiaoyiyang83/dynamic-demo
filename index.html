@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Brushing Heatmap — Preference Collection Template</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.9.0/d3.min.js"></script>
+  <style>
+    :root { --g50:#f8fafc; --g100:#f3f4f6; --g200:#e5e7eb; --g300:#d1d5db; --ink:#0f172a; --primary:#2563eb; }
+    * { box-sizing: border-box; }
+    body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji"; margin: 24px; color: #0f172a; }
+    h1 { font-size: 20px; margin: 0 0 12px; }
+    p { margin: 8px 0 16px; color:#334155; }
+    .wrap { display: grid; grid-template-columns: 1fr 320px; gap: 20px; align-items: start; }
+    .panel { border: 1px solid var(--g200); border-radius: 12px; padding: 12px; box-shadow: 0 1px 2px rgba(0,0,0,0.06); background: white; }
+    .panel h3 { margin: 0 0 8px; font-size: 14px; font-weight: 600; }
+    .toolbar { display:flex; gap:8px; align-items:center; margin-bottom:8px; }
+    .btn { appearance:none; border:1px solid var(--g200); background:white; border-radius:10px; padding:6px 10px; cursor:pointer; font-size:12px; }
+    .btn:hover { background:var(--g50); }
+    .toggle.on { background:#e0e7ff; border-color:#c7d2fe; }
+    .hint { font-size:12px; color:#475569; margin-top:6px; }
+    .legend { display:flex; align-items:center; gap:8px; font-size:12px; }
+    .swatch { width:12px; height:12px; border-radius:2px; border:1px solid rgba(0,0,0,0.15); }
+    .counts { display:grid; grid-template-columns: 1fr auto; gap:6px; margin-top:8px; font-size:12px; }
+    .pill { display:inline-block; padding:2px 8px; border-radius:999px; background:#eef2ff; }
+    .table { width:100%; border-collapse: collapse; font-size:12px; margin-top:8px; }
+    .table th, .table td { border-bottom:1px solid var(--g200); padding:6px 6px; text-align:left; }
+    .table th { background:var(--g50); }
+    .badge { position:absolute; right:4px; top:4px; font-size:10px; background:rgba(255,255,255,0.85); border:1px solid var(--g200); padding:1px 5px; border-radius:999px; }
+    .cell { shape-rendering: crispEdges; cursor: crosshair; }
+    .cell.selected { outline: 1.5px solid #111827; outline-offset: -1px; }
+    .grid { overflow: auto; }
+    svg { display:block; max-width:100%; height:auto; }
+    .rowlabel, .collabel { font-size:11px; fill:#334155; }
+  </style>
+</head>
+<body>
+  <h1>Brushing Heatmap — Preference Collection Template</h1>
+  <p>Brush over cells to mark preferences. This template collects interactions (which cells were brushed) and displays live counts, so your visualization doubles as a data-collection UI.</p>
+
+  <div class="wrap">
+    <div class="panel">
+      <h3>Heatmap</h3>
+      <div class="toolbar">
+        <button class="btn toggle" id="modeAdd">Add mode</button>
+        <button class="btn" id="modeRemove">Remove</button>
+        <button class="btn" id="resetSel">Reset selection</button>
+        <button class="btn" id="resetCnt">Reset counts</button>
+      </div>
+      <div class="legend">
+        <span class="swatch" style="background:#d1d5db"></span> Not selected
+        <span class="swatch" style="background:#60a5fa"></span> Selected (low count)
+        <span class="swatch" style="background:#1d4ed8"></span> Selected (high count)
+      </div>
+      <div class="hint">Tip: Drag to brush. Switch to <em>Remove</em> to subtract from selection. Counts increment each time a cell is included in an Add brush.</div>
+      <div id="heatmap" class="grid"></div>
+    </div>
+
+    <div class="panel">
+      <h3>Collected Data</h3>
+      <div class="counts">
+        <div>Total selected cells</div>
+        <div><span id="totalSelected" class="pill">0</span></div>
+        <div>Total add-brush actions</div>
+        <div><span id="totalBrushes" class="pill">0</span></div>
+      </div>
+
+      <table class="table" id="topTable">
+        <thead>
+          <tr><th>Row</th><th>Col</th><th>Label</th><th>Count</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+
+  <script>
+  (function(){
+    "use strict";
+
+    // ==== CONFIG YOU EDIT ====
+    // Paste your Google Apps Script Web App URL below (from Deploy → Web app)
+    const APPS_URL = "https://script.google.com/macros/s/AKfycbwrUIZkVCvsrbv_Gz42O17JKyqlr2WTlNQDfZ7KfZ7zrB4-AmXSo4SoqINa7DL2LUTL/exec"; // e.g., https://script.google.com/macros/s/AKfycbx.../exec
+
+    // Stable anonymous user id per browser (for classroom privacy)
+    let uid = localStorage.getItem("heatmap_uid");
+    if (!uid) {
+      const gen = (self.crypto && crypto.randomUUID) ? crypto.randomUUID() : (Date.now()+"-"+Math.random());
+      uid = gen; localStorage.setItem("heatmap_uid", uid);
+    }
+
+    // ======== Config (existing) ========
+    const rows = 10; // number of rows
+    const cols = 12; // number of columns
+    const cellSize = 32; // px
+    const margin = { top: 50, right: 20, bottom: 20, left: 90 };
+
+    // Generate demo labels
+    const rowLabels = d3.range(rows).map(i => `Row ${i+1}`);
+    const colLabels = d3.range(cols).map(j => `Col ${j+1}`);
+
+    // Base values (optional stimulus). Feel free to replace with your own matrix.
+    const base = d3.range(rows * cols).map(() => Math.random());
+
+    // State
+    const selected = new Set(); // key = `${r}-${c}`
+    const counts = new Map();   // key -> integer count of times included in Add brush
+    let totalBrushes = 0;
+    let addMode = true;
+
+    // Color scales
+    const baseColor = d3.scaleSequential(d3.interpolateBlues).domain([0, 1]);
+    const grey = '#d1d5db';
+    const countColor = d3.scaleLinear().domain([0, 5, 10]).range(['#60a5fa', '#3b82f6', '#1d4ed8']);
+
+    // Container
+    const width = margin.left + margin.right + cols * cellSize;
+    const height = margin.top + margin.bottom + rows * cellSize;
+
+    const svg = d3.select('#heatmap').append('svg')
+      .attr('width', width)
+      .attr('height', height)
+      .attr('viewBox', [0,0,width,height])
+      .style('background', 'white');
+
+    const g = svg.append('g').attr('transform', `translate(${margin.left},${margin.top})`);
+
+    // Axes labels
+    g.selectAll('.rowlabel')
+      .data(rowLabels)
+      .enter().append('text')
+      .attr('class','rowlabel')
+      .attr('x', -6)
+      .attr('y', (_, i) => i * cellSize + cellSize/2)
+      .attr('dy', '0.35em')
+      .attr('text-anchor','end')
+      .text(d => d);
+
+    g.selectAll('.collabel')
+      .data(colLabels)
+      .enter().append('text')
+      .attr('class','collabel')
+      .attr('x', (_, j) => j * cellSize + cellSize/2)
+      .attr('y', -8)
+      .attr('text-anchor','middle')
+      .text(d => d);
+
+    // Cells group
+    const cells = g.append('g').attr('class','cells');
+
+    const data = d3.cross(d3.range(rows), d3.range(cols), (r,c) => ({ r, c, key: `${r}-${c}`, value: base[r*cols + c] }));
+
+    const cell = cells.selectAll('g.cell').data(data).enter().append('g')
+      .attr('class','cell')
+      .attr('transform', d => `translate(${d.c * cellSize}, ${d.r * cellSize})`);
+
+    cell.append('rect')
+      .attr('width', cellSize-1)
+      .attr('height', cellSize-1)
+      .attr('rx', 3)
+      .attr('ry', 3)
+      .attr('fill', d => baseColor(d.value))
+      .attr('stroke', 'white');
+
+    // Count badge (hidden until selected at least once)
+    cell.append('text')
+      .attr('class','badge')
+      .attr('x', cellSize - 18)
+      .attr('y', 12)
+      .attr('text-anchor','end')
+      .style('display','none')
+      .text('0');
+
+    // ========= NEW: Helper functions for backend =========
+    async function postBrush(inBrush, addModeFlag){
+      // Only send Add-mode brushes, and only if APPS_URL is configured
+      if (!addModeFlag || !inBrush || !inBrush.length || !APPS_URL || APPS_URL.includes('PASTE_YOUR_APPS_SCRIPT_URL_HERE')) return;
+      const payload = inBrush.map(d => ({ userId: uid, r: d.r, c: d.c, cnt: 1, mode: 'add' }));
+      try {
+        await fetch(APPS_URL, {
+          method: 'POST',
+          mode: 'no-cors',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+      } catch (e) {
+        console.warn('POST failed (continuing locally):', e);
+      }
+    }
+
+    async function fetchAggregates(){
+      if (!APPS_URL || APPS_URL.includes('PASTE_YOUR_APPS_SCRIPT_URL_HERE')) return; // skip until configured
+      try {
+        const res = await fetch(APPS_URL);
+        const data = await res.json();
+        if (!data || !data.ok) return;
+        counts.clear();
+        selected.clear();
+        for (const key in data.agg) {
+          const val = data.agg[key] || 0;
+          counts.set(key, val);
+          if (val > 0) selected.add(key);
+        }
+        updateView();
+      } catch (e) {
+        // ignore transient errors
+      }
+    }
+
+    // Brush
+    const brush = d3.brush()
+      .extent([[0,0],[cols*cellSize, rows*cellSize]])
+      .on('start brush end', brushed);
+
+    const brushG = g.append('g').attr('class', 'brush').call(brush);
+
+    function brushed(event){
+      const sel = event.selection;
+      if (!sel) return; // nothing brushed yet
+      const [[x0,y0],[x1,y1]] = sel;
+
+      // Which cells are inside this brush rectangle?
+      const inBrush = [];
+      cell.each(function(d){
+        const cx = d.c * cellSize + cellSize/2;
+        const cy = d.r * cellSize + cellSize/2;
+        if (x0 <= cx && cx < x1 && y0 <= cy && cy < y1) inBrush.push(d);
+      });
+
+      if (event.type === 'end') {
+        if (addMode) {
+          totalBrushes += 1;
+          for (const d of inBrush) {
+            selected.add(d.key);
+            counts.set(d.key, (counts.get(d.key) || 0) + 1);
+          }
+        } else {
+          for (const d of inBrush) {
+            selected.delete(d.key);
+            // counts unchanged in remove mode
+          }
+        }
+        updateView();
+        d3.select('#totalBrushes').text(totalBrushes);
+        // Clear the brush selection visual but keep our state
+        brushG.call(brush.move, null);
+
+        // NEW: send to backend + refresh aggregates
+        postBrush(inBrush, addMode);
+        fetchAggregates();
+      }
+    }
+
+    function updateView(){
+      // Update cell fills depending on selection + counts
+      cell.select('rect')
+        .attr('fill', function(d){
+          if (selected.size === 0) return baseColor(d.value);
+          if (selected.has(d.key)) {
+            const cnt = counts.get(d.key) || 0;
+            return countColor(cnt);
+          }
+          return grey; // not selected
+        })
+        .classed('selected', d => selected.has(d.key));
+
+      // Show/hide & update badges
+      cell.select('text.badge')
+        .style('display', d => (counts.get(d.key) || 0) > 0 ? 'block' : 'none')
+        .text(d => counts.get(d.key) || 0);
+
+      // Totals and top list
+      d3.select('#totalSelected').text(selected.size);
+      renderTopTable();
+    }
+
+    function renderTopTable(){
+      const rowsData = Array.from(counts.entries())
+        .map(([key, cnt]) => { const [r,c] = key.split('-').map(Number); return { r, c, cnt, label: `${rowLabels[r]} × ${colLabels[c]}` }; })
+        .sort((a,b) => d3.descending(a.cnt, b.cnt))
+        .slice(0, 10);
+
+      const tbody = d3.select('#topTable tbody');
+      const tr = tbody.selectAll('tr').data(rowsData, d => d.r + '-' + d.c);
+      tr.enter().append('tr')
+        .html(d => `<td>${d.r+1}</td><td>${d.c+1}</td><td>${d.label}</td><td>${d.cnt}</td>`);
+      tr.html(d => `<td>${d.r+1}</td><td>${d.c+1}</td><td>${d.label}</td><td>${d.cnt}</td>`);
+      tr.exit().remove();
+    }
+
+    // Toolbar
+    const btnAdd = d3.select('#modeAdd');
+    const btnRemove = d3.select('#modeRemove');
+
+    function setMode(add){
+      addMode = add;
+      btnAdd.classed('on', addMode);
+      btnRemove.classed('on', !addMode);
+    }
+
+    btnAdd.on('click', () => setMode(true));
+    btnRemove.on('click', () => setMode(false));
+    setMode(true);
+
+    d3.select('#resetSel').on('click', function(){
+      selected.clear();
+      updateView();
+    });
+
+    d3.select('#resetCnt').on('click', function(){
+      counts.clear();
+      totalBrushes = 0;
+      d3.select('#totalBrushes').text(totalBrushes);
+      updateView();
+    });
+
+    // Initial view
+    updateView();
+
+    // NEW: near-realtime global refresh so everyone sees a shared view
+    setInterval(fetchAggregates, 3000); // every 3 seconds
+    fetchAggregates(); // also once on load
+
+    // Minimal error logging to console for debugging
+    window.addEventListener('error', function(e){ console.error('Runtime error:', e.message); });
+
+  })();
+  </script>
+</body>
+</html>
