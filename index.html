@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Brushing Heatmap — Preference Collection Template</title>
+  <title>Brushing Heatmap — CSV + Online Shared (Single File)</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.9.0/d3.min.js"></script>
   <style>
     :root { --g50:#f8fafc; --g100:#f3f4f6; --g200:#e5e7eb; --g300:#d1d5db; --ink:#0f172a; --primary:#2563eb; }
@@ -24,7 +24,7 @@
     .counts { display:grid; grid-template-columns: 1fr auto; gap:6px; margin-top:8px; font-size:12px; }
     .pill { display:inline-block; padding:2px 8px; border-radius:999px; background:#eef2ff; }
     .table { width:100%; border-collapse: collapse; font-size:12px; margin-top:8px; }
-    .table th, .table td { border-bottom:1px solid var(--g200); padding:6px 6px; text-align:left; }
+    .table th, .table td { border-bottom:1px solid var(--g200); padding:20px 20px; text-align:left; }
     .table th { background:var(--g50); }
     .badge { position:absolute; right:4px; top:4px; font-size:10px; background:rgba(255,255,255,0.85); border:1px solid var(--g200); padding:1px 5px; border-radius:999px; }
     .cell { shape-rendering: crispEdges; cursor: crosshair; }
@@ -33,10 +33,39 @@
     svg { display:block; max-width:100%; height:auto; }
     .rowlabel, .collabel { font-size:11px; fill:#334155; }
   </style>
+
+  <!-- Inline CSV: first column = row labels (years); other headers = column labels (genres). -->
+  <script id="matrix-csv" type="text/plain">
+year,acoustic,alt-rock,black-metal,blues,comedy,emo,gospel,indian,k-pop,new-age
+2000,841,896,874,782,289,854,947,874,927,940
+2001,673,842,915,838,377,861,942,853,835,854
+2002,826,882,884,848,407,871,921,878,832,834
+2003,869,842,849,744,480,928,863,820,821,801
+2004,846,797,883,804,473,895,886,819,857,790
+2005,841,871,839,785,781,905,848,756,805,862
+2006,847,810,876,775,898,818,904,936,821,795
+2007,856,907,918,770,924,804,871,820,840,812
+2008,806,898,880,797,879,809,881,806,780,837
+2009,870,853,839,755,985,827,869,894,790,779
+2010,918,825,876,772,889,821,868,841,775,778
+2011,871,836,874,762,962,799,822,802,773,731
+2012,968,954,985,909,979,933,949,875,890,940
+2013,940,902,923,932,967,894,930,892,805,940
+2014,940,929,977,861,988,914,941,849,866,871
+2015,919,932,974,856,984,880,944,899,846,902
+2016,976,941,963,874,955,879,905,856,862,919
+2017,947,934,965,881,979,904,939,831,862,869
+2018,939,916,969,860,983,919,918,891,851,888
+2019,946,935,953,862,989,869,924,885,888,896
+2020,951,880,933,893,973,889,909,936,820,841
+2021,868,846,930,807,934,884,905,884,873,738
+2022,849,853,884,794,966,864,890,872,822,869
+2023,790,637,889,721,293,824,845,814,763,425
+  </script>
 </head>
 <body>
-  <h1>Brushing Heatmap — Preference Collection Template</h1>
-  <p>Brush over cells to mark preferences. This template collects interactions (which cells were brushed) and displays live counts, so your visualization doubles as a data-collection UI.</p>
+  <h1>Brushing Heatmap — Preference Collection (CSV + Online Ready)</h1>
+  <p>Brush over cells to mark preferences. Add mode increases counts; Remove mode removes cells from the current selection. Background colors come from the CSV matrix below.</p>
 
   <div class="wrap">
     <div class="panel">
@@ -67,7 +96,7 @@
 
       <table class="table" id="topTable">
         <thead>
-          <tr><th>Row</th><th>Col</th><th>Label</th><th>Count</th></tr>
+          <tr><th>Year</th><th>Genre</th><th>Label</th><th>Count</th></tr>
         </thead>
         <tbody></tbody>
       </table>
@@ -78,29 +107,48 @@
   (function(){
     "use strict";
 
-    // ==== CONFIG YOU EDIT ====
-    // Paste your Google Apps Script Web App URL below (from Deploy → Web app)
-    const APPS_URL = "https://script.google.com/macros/s/AKfycbwrUIZkVCvsrbv_Gz42O17JKyqlr2WTlNQDfZ7KfZ7zrB4-AmXSo4SoqINa7DL2LUTL/exec"; // e.g., https://script.google.com/macros/s/AKfycbx.../exec
+    // ==== CONFIG (Apps Script URL for online shared mode) ====
+    // Optional: paste your Google Apps Script Web App URL to collect brushes globally
+    const APPS_URL = "https://script.google.com/macros/s/AKfycbwrUIZkVCvsrbv_Gz42O17JKyqlr2WTlNQDfZ7KfZ7zrB4-AmXSo4SoqINa7DL2LUTL/exec"; // e.g., https://script.google.com/macros/s/AKfycbx.../exec  (leave empty to disable)
 
-    // Stable anonymous user id per browser (for classroom privacy)
+    // Stable anonymous user id per browser
     let uid = localStorage.getItem("heatmap_uid");
     if (!uid) {
       const gen = (self.crypto && crypto.randomUUID) ? crypto.randomUUID() : (Date.now()+"-"+Math.random());
       uid = gen; localStorage.setItem("heatmap_uid", uid);
     }
 
-    // ======== Config (existing) ========
-    const rows = 10; // number of rows
-    const cols = 12; // number of columns
-    const cellSize = 32; // px
+    // ======== Load matrix from inline CSV (first col = rows, others = columns) ========
+    let rowLabels, colLabels, baseValues2D;
+    const csvNode = document.getElementById('matrix-csv');
+    const csvText = csvNode ? csvNode.textContent.trim() : '';
+    if (csvText) {
+      const parsed = d3.csvParse(csvText);
+      const headers = parsed.columns;
+      const rowKey = headers[0];
+      rowLabels = parsed.map(d => String(d[rowKey]));
+      colLabels = headers.slice(1);
+      baseValues2D = parsed.map(row => colLabels.map(k => {
+        const v = +row[k];
+        return Number.isFinite(v) ? v : 0;
+      }));
+    } else {
+      // Fallback demo if CSV removed
+      const demoRows = 10, demoCols = 12;
+      rowLabels = d3.range(demoRows).map(i => `Row ${i+1}`);
+      colLabels = d3.range(demoCols).map(j => `Col ${j+1}`);
+      baseValues2D = d3.range(demoRows).map(() => d3.range(demoCols).map(()=> Math.random()));
+    }
+
+    // Normalize to [0,1]
+    const flat = baseValues2D.flat();
+    const vmin = d3.min(flat), vmax = d3.max(flat);
+    const norm2D = baseValues2D.map(r => r.map(v => (vmax>vmin ? (v - vmin)/(vmax - vmin) : 0)));
+
+    const rows = rowLabels.length;
+    const cols = colLabels.length;
+    const cellSize = 50; // px
     const margin = { top: 50, right: 20, bottom: 20, left: 90 };
-
-    // Generate demo labels
-    const rowLabels = d3.range(rows).map(i => `Row ${i+1}`);
-    const colLabels = d3.range(cols).map(j => `Col ${j+1}`);
-
-    // Base values (optional stimulus). Feel free to replace with your own matrix.
-    const base = d3.range(rows * cols).map(() => Math.random());
 
     // State
     const selected = new Set(); // key = `${r}-${c}`
@@ -108,12 +156,12 @@
     let totalBrushes = 0;
     let addMode = true;
 
-    // Color scales
+    // Colors
     const baseColor = d3.scaleSequential(d3.interpolateBlues).domain([0, 1]);
     const grey = '#d1d5db';
     const countColor = d3.scaleLinear().domain([0, 5, 10]).range(['#60a5fa', '#3b82f6', '#1d4ed8']);
 
-    // Container
+    // SVG container
     const width = margin.left + margin.right + cols * cellSize;
     const height = margin.top + margin.bottom + rows * cellSize;
 
@@ -125,7 +173,7 @@
 
     const g = svg.append('g').attr('transform', `translate(${margin.left},${margin.top})`);
 
-    // Axes labels
+    // Labels
     g.selectAll('.rowlabel')
       .data(rowLabels)
       .enter().append('text')
@@ -145,10 +193,9 @@
       .attr('text-anchor','middle')
       .text(d => d);
 
-    // Cells group
+    // Cells
     const cells = g.append('g').attr('class','cells');
-
-    const data = d3.cross(d3.range(rows), d3.range(cols), (r,c) => ({ r, c, key: `${r}-${c}`, value: base[r*cols + c] }));
+    const data = d3.cross(d3.range(rows), d3.range(cols), (r,c) => ({ r, c, key: `${r}-${c}`, label: `${rowLabels[r]} × ${colLabels[c]}`, base: norm2D[r][c] }));
 
     const cell = cells.selectAll('g.cell').data(data).enter().append('g')
       .attr('class','cell')
@@ -159,7 +206,7 @@
       .attr('height', cellSize-1)
       .attr('rx', 3)
       .attr('ry', 3)
-      .attr('fill', d => baseColor(d.value))
+      .attr('fill', d => baseColor(d.base))
       .attr('stroke', 'white');
 
     // Count badge (hidden until selected at least once)
@@ -171,43 +218,7 @@
       .style('display','none')
       .text('0');
 
-    // ========= NEW: Helper functions for backend =========
-    async function postBrush(inBrush, addModeFlag){
-      // Only send Add-mode brushes, and only if APPS_URL is configured
-      if (!addModeFlag || !inBrush || !inBrush.length || !APPS_URL || APPS_URL.includes('PASTE_YOUR_APPS_SCRIPT_URL_HERE')) return;
-      const payload = inBrush.map(d => ({ userId: uid, r: d.r, c: d.c, cnt: 1, mode: 'add' }));
-      try {
-        await fetch(APPS_URL, {
-          method: 'POST',
-          mode: 'no-cors',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload)
-        });
-      } catch (e) {
-        console.warn('POST failed (continuing locally):', e);
-      }
-    }
-
-    async function fetchAggregates(){
-      if (!APPS_URL || APPS_URL.includes('PASTE_YOUR_APPS_SCRIPT_URL_HERE')) return; // skip until configured
-      try {
-        const res = await fetch(APPS_URL);
-        const data = await res.json();
-        if (!data || !data.ok) return;
-        counts.clear();
-        selected.clear();
-        for (const key in data.agg) {
-          const val = data.agg[key] || 0;
-          counts.set(key, val);
-          if (val > 0) selected.add(key);
-        }
-        updateView();
-      } catch (e) {
-        // ignore transient errors
-      }
-    }
-
-    // Brush
+    // Brush (unchanged behavior)
     const brush = d3.brush()
       .extent([[0,0],[cols*cellSize, rows*cellSize]])
       .on('start brush end', brushed);
@@ -216,10 +227,9 @@
 
     function brushed(event){
       const sel = event.selection;
-      if (!sel) return; // nothing brushed yet
+      if (!sel) return;
       const [[x0,y0],[x1,y1]] = sel;
 
-      // Which cells are inside this brush rectangle?
       const inBrush = [];
       cell.each(function(d){
         const cx = d.c * cellSize + cellSize/2;
@@ -237,54 +247,54 @@
         } else {
           for (const d of inBrush) {
             selected.delete(d.key);
-            // counts unchanged in remove mode
           }
         }
         updateView();
         d3.select('#totalBrushes').text(totalBrushes);
-        // Clear the brush selection visual but keep our state
         brushG.call(brush.move, null);
 
-        // NEW: send to backend + refresh aggregates
+        // Online shared mode hooks
         postBrush(inBrush, addMode);
         fetchAggregates();
       }
     }
 
     function updateView(){
-      // Update cell fills depending on selection + counts
+      // Fill base for unselected, blue scale for selected (by count)
       cell.select('rect')
         .attr('fill', function(d){
-          if (selected.size === 0) return baseColor(d.value);
+          if (selected.size === 0) return baseColor(d.base);
           if (selected.has(d.key)) {
             const cnt = counts.get(d.key) || 0;
             return countColor(cnt);
           }
-          return grey; // not selected
+          return grey;
         })
         .classed('selected', d => selected.has(d.key));
 
-      // Show/hide & update badges
+      // badges
       cell.select('text.badge')
         .style('display', d => (counts.get(d.key) || 0) > 0 ? 'block' : 'none')
         .text(d => counts.get(d.key) || 0);
 
-      // Totals and top list
       d3.select('#totalSelected').text(selected.size);
       renderTopTable();
     }
 
     function renderTopTable(){
       const rowsData = Array.from(counts.entries())
-        .map(([key, cnt]) => { const [r,c] = key.split('-').map(Number); return { r, c, cnt, label: `${rowLabels[r]} × ${colLabels[c]}` }; })
+        .map(([key, cnt]) => {
+          const [r,c] = key.split('-').map(Number);
+          return { r, c, cnt, label: `${rowLabels[r]} × ${colLabels[c]}` };
+        })
         .sort((a,b) => d3.descending(a.cnt, b.cnt))
         .slice(0, 10);
 
       const tbody = d3.select('#topTable tbody');
       const tr = tbody.selectAll('tr').data(rowsData, d => d.r + '-' + d.c);
       tr.enter().append('tr')
-        .html(d => `<td>${d.r+1}</td><td>${d.c+1}</td><td>${d.label}</td><td>${d.cnt}</td>`);
-      tr.html(d => `<td>${d.r+1}</td><td>${d.c+1}</td><td>${d.label}</td><td>${d.cnt}</td>`);
+        .html(d => `<td>${rowLabels[d.r]}</td><td>${colLabels[d.c]}</td><td>${d.label}</td><td>${d.cnt}</td>`);
+      tr.html(d => `<td>${rowLabels[d.r]}</td><td>${colLabels[d.c]}</td><td>${d.label}</td><td>${d.cnt}</td>`);
       tr.exit().remove();
     }
 
@@ -302,27 +312,43 @@
     btnRemove.on('click', () => setMode(false));
     setMode(true);
 
-    d3.select('#resetSel').on('click', function(){
-      selected.clear();
-      updateView();
-    });
+    d3.select('#resetSel').on('click', function(){ selected.clear(); updateView(); });
+    d3.select('#resetCnt').on('click', function(){ counts.clear(); totalBrushes = 0; d3.select('#totalBrushes').text(totalBrushes); updateView(); });
 
-    d3.select('#resetCnt').on('click', function(){
-      counts.clear();
-      totalBrushes = 0;
-      d3.select('#totalBrushes').text(totalBrushes);
-      updateView();
-    });
-
-    // Initial view
+    // Initial
     updateView();
 
-    // NEW: near-realtime global refresh so everyone sees a shared view
-    setInterval(fetchAggregates, 3000); // every 3 seconds
-    fetchAggregates(); // also once on load
+    // ===== Online Shared Mode (optional) =====
+    async function postBrush(inBrush, addModeFlag){
+      if (!APPS_URL || !addModeFlag || !inBrush || !inBrush.length) return;
+      const payload = inBrush.map(d => ({ userId: uid, r: d.r, c: d.c, cnt: 1, mode: 'add' }));
+      try {
+        await fetch(APPS_URL, { method: 'POST', mode: 'no-cors', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      } catch(e){ console.warn('POST failed:', e); }
+    }
 
-    // Minimal error logging to console for debugging
-    window.addEventListener('error', function(e){ console.error('Runtime error:', e.message); });
+    async function fetchAggregates(){
+      if (!APPS_URL) return;
+      try {
+        const res = await fetch(APPS_URL);
+        const data = await res.json();
+        if (!data || !data.ok) return;
+        counts.clear();
+        selected.clear();
+        for (const key in data.agg) {
+          const val = data.agg[key] || 0;
+          counts.set(key, val);
+          if (val > 0) selected.add(key);
+        }
+        updateView();
+      } catch(e){ /* ignore */ }
+    }
+
+    // Poll aggregates every 3s if APPS_URL provided
+    if (APPS_URL) {
+      setInterval(fetchAggregates, 3000);
+      fetchAggregates();
+    }
 
   })();
   </script>
